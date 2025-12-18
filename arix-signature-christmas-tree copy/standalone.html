@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Arix Signature Christmas Tree - Standalone</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Montserrat:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        body { 
+            margin: 0; 
+            background-color: #020617; 
+            overflow: hidden; 
+            font-family: 'Montserrat', sans-serif;
+        }
+        .text-gold-gradient {
+            background: linear-gradient(to bottom, #FCD34D, #D97706, #FCD34D);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in-down {
+            animation: fadeInDown 1.5s ease-out forwards;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- Import Maps for ES Modules -->
+    <script type="importmap">
+    {
+        "imports": {
+            "react": "https://esm.sh/react@19.2.3",
+            "react-dom/client": "https://esm.sh/react-dom@19.2.3/client",
+            "three": "https://esm.sh/three@0.182.0",
+            "@react-three/fiber": "https://esm.sh/@react-three/fiber@9.4.2",
+            "@react-three/drei": "https://esm.sh/@react-three/drei@10.7.7",
+            "@react-three/postprocessing": "https://esm.sh/@react-three/postprocessing@3.0.4"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import React from 'react';
+        import { createRoot } from 'react-dom/client';
+        import { Canvas, useFrame, useThree } from '@react-three/fiber';
+        import { OrbitControls, Environment, ContactShadows, Center } from '@react-three/drei';
+        import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
+        import * as THREE from 'three';
+
+        // Types and Constants
+        const TreeState = {
+            SCATTERED: 'SCATTERED',
+            TREE_SHAPE: 'TREE_SHAPE'
+        };
+
+        const FOLIAGE_COUNT = 15000;
+        const ORNAMENT_COUNT = 500;
+        const GIFT_COUNT = 400;
+        const TREE_HEIGHT = 12;
+        const TREE_RADIUS = 5;
+        const SCATTER_RADIUS = 15;
+
+        // Math utilities
+        const getRandomSpherePos = (radius) => {
+            const u = Math.random();
+            const v = Math.random();
+            const theta = 2 * Math.PI * u;
+            const phi = Math.acos(2 * v - 1);
+            const r = Math.cbrt(Math.random()) * radius;
+            
+            const x = r * Math.sin(phi) * Math.cos(theta);
+            const y = r * Math.sin(phi) * Math.sin(theta);
+            const z = r * Math.cos(phi);
+            
+            return new THREE.Vector3(x, y, z);
+        };
+
+        const getTreeConePos = (heightRatio, angleOffset, maxRadius, maxHeight) => {
+            const y = (heightRatio - 0.5) * maxHeight;
+            const r = maxRadius * (1 - heightRatio) + 0.2;
+            const theta = heightRatio * 25 + angleOffset;
+            
+            const x = r * Math.cos(theta);
+            const z = r * Math.sin(theta);
+            
+            return new THREE.Vector3(x, y, z);
+        };
+
+        // Foliage Component
+        const Foliage = ({ progress }) => {
+            const shaderRef = React.useRef(null);
+            
+            const { positions, scatterPositions, treePositions, randoms } = React.useMemo(() => {
+                const pos = new Float32Array(FOLIAGE_COUNT * 3);
+                const scatter = new Float32Array(FOLIAGE_COUNT * 3);
+                const tree = new Float32Array(FOLIAGE_COUNT * 3);
+                const rnd = new Float32Array(FOLIAGE_COUNT);
+
+                for (let i = 0; i < FOLIAGE_COUNT; i++) {
+                    const hRatio = Math.random();
+                    const pTree = getTreeConePos(hRatio, Math.random() * Math.PI * 2, TREE_RADIUS, TREE_HEIGHT);
+                    const pScatter = getRandomSpherePos(SCATTER_RADIUS);
+
+                    tree[i * 3] = pTree.x;
+                    tree[i * 3 + 1] = pTree.y;
+                    tree[i * 3 + 2] = pTree.z;
+
+                    scatter[i * 3] = pScatter.x;
+                    scatter[i * 3 + 1] = pScatter.y;
+                    scatter[i * 3 + 2] = pScatter.z;
+
+                    pos[i * 3] = pScatter.x;
+                    pos[i * 3 + 1] = pScatter.y;
+                    pos[i * 3 + 2] = pScatter.z;
+
+                    rnd[i] = Math.random();
+                }
+                return { positions: pos, scatterPositions: scatter, treePositions: tree, randoms: rnd };
+            }, []);
+
+            const FoliageMaterial = React.useMemo(() => ({
+                uniforms: {
+                    uTime: { value: 0 },
+                    uMorph: { value: 0 },
+                    uColorBase: { value: new THREE.Color('#004225') },
+                    uColorTip: { value: new THREE.Color('#D4AF37') },
+                },
+                vertexShader: `
+                    uniform float uTime;
+                    uniform float uMorph;
+                    attribute vec3 aScatterPos;
+                    attribute vec3 aTreePos;
+                    attribute float aRandom;
+                    
+                    varying float vAlpha;
+
+                    float easeInOutCubic(float x) {
+                        return x < 0.5 ? 4.0 * x * x * x : 1.0 - pow(-2.0 * x + 2.0, 3.0) / 2.0;
+                    }
+
+                    void main() {
+                        float t = easeInOutCubic(uMorph);
+                        vec3 pos = mix(aScatterPos, aTreePos, t);
+                        
+                        float wind = sin(uTime * 2.0 + aRandom * 10.0) * 0.1;
+                        pos.x += wind * (1.0 - uMorph);
+                        pos.y += wind * 0.5;
+                        
+                        vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
+                        gl_PointSize = (4.0 + aRandom * 3.0) * (50.0 / -mvPosition.z);
+                        gl_Position = projectionMatrix * mvPosition;
+
+                        vAlpha = 0.7 + 0.3 * aRandom;
+                    }
+                `,
+                fragmentShader: `
+                    uniform vec3 uColorBase;
+                    uniform vec3 uColorTip;
+                    varying float vAlpha;
+
+                    void main() {
+                        vec2 coord = gl_PointCoord - vec2(0.5);
+                        float dist = length(coord);
+                        if (dist > 0.5) discard;
+
+                        float strength = 1.0 - (dist * 2.0);
+                        strength = pow(strength, 1.5);
+
+                        vec3 finalColor = mix(uColorBase, uColorTip, strength * 0.5);
+                        gl_FragColor = vec4(finalColor + vec3(0.1), vAlpha * strength);
+                    }
+                `
+            }), []);
+
+            useFrame(({ clock }) => {
+                if (shaderRef.current) {
+                    shaderRef.current.uniforms.uTime.value = clock.getElapsedTime();
+                    shaderRef.current.uniforms.uMorph.value = THREE.MathUtils.lerp(
+                        shaderRef.current.uniforms.uMorph.value,
+                        progress,
+                        0.05
+                    );
+                }
+            });
+
+            return React.createElement('points', null,
+                React.createElement('bufferGeometry', null,
+                    React.createElement('bufferAttribute', {
+                        attach: 'attributes-position',
+                        count: positions.length / 3,
+                        array: positions,
+                        itemSize: 3
+                    }),
+                    React.createElement('bufferAttribute', {
+                        attach: 'attributes-aScatterPos',
+                        count: scatterPositions.length / 3,
+                        array: scatterPositions,
+                        itemSize: 3
+                    }),
+                    React.createElement('bufferAttribute', {
+                        attach: 'attributes-aTreePos',
+                        count: treePositions.length / 3,
+                        array: treePositions,
+                        itemSize: 3
+                    }),
+                    React.createElement('bufferAttribute', {
+                        attach: 'attributes-aRandom',
+                        count: randoms.length,
+                        array: randoms,
+                        itemSize: 1
+                    })
+                ),
+                React.createElement('shaderMaterial', {
+                    ref: shaderRef,
+                    attach: 'material',
+                    args: [FoliageMaterial],
+                    transparent: true,
+                    depthWrite: false,
+                    blending: THREE.AdditiveBlending
+                })
+            );
+        };
+
+        // Ornaments Component
+        const Ornaments = ({ progress }) => {
+            const baubleMeshRef = React.useRef(null);
+            const giftMeshRef = React.useRef(null);
+            const uniforms = React.useMemo(() => ({ uTime: { value: 0 } }), []);
+
+            const patchMaterial = (shader, uniforms, config = { intensity: 2.0, mix: 0.1 }) => {
+                shader.uniforms.uTime = uniforms.uTime;
+                
+                shader.fragmentShader = `
+                    uniform float uTime;
+                ` + shader.fragmentShader;
+
+                shader.fragmentShader = shader.fragmentShader.replace(
+                    '#include <dithering_fragment>',
+                    `
+                    #include <dithering_fragment>
+                    
+                    float offset = vColor.r * 10.0 + vColor.g * 20.0 + vColor.b * 30.0;
+                    float sine = sin(uTime * 1.0 + offset);
+                    float breath = (sine + 1.0) * 0.5;
+                    float strength = pow(breath, 2.0);
+                    
+                    vec3 glowColor = vec3(1.0, 0.85, 0.6) * ${config.intensity.toFixed(1)}; 
+                    gl_FragColor.rgb += glowColor * strength * vColor * ${config.mix.toFixed(2)}; 
+                    `
+                );
+            };
+
+            const baubleMaterial = React.useMemo(() => {
+                const mat = new THREE.MeshStandardMaterial({
+                    color: "#ffffff",
+                    metalness: 1.0, 
+                    roughness: 0.15,
+                    envMapIntensity: 2.0,
+                });
+                mat.onBeforeCompile = (shader) => patchMaterial(shader, uniforms, { intensity: 2.0, mix: 0.1 });
+                return mat;
+            }, [uniforms]);
+
+            const giftMaterial = React.useMemo(() => {
+                const mat = new THREE.MeshStandardMaterial({
+                    color: "#ffffff", 
+                    metalness: 0.6, 
+                    roughness: 0.25,
+                    envMapIntensity: 1.5 
+                });
+                mat.onBeforeCompile = (shader) => patchMaterial(shader, uniforms, { intensity: 4.0, mix: 0.35 });
+                return mat;
+            }, [uniforms]);
+
+            const baubles = React.useMemo(() => {
+                const data = [];
+                for (let i = 0; i < ORNAMENT_COUNT; i++) {
+                    const hRatio = Math.pow(Math.random(), 1.8) * 0.95; 
+                    const offset = 0.5 + Math.random() * 0.5;
+                    const treePos = getTreeConePos(hRatio, Math.random() * Math.PI * 2, TREE_RADIUS + offset, TREE_HEIGHT);
+                    const scatterPos = getRandomSpherePos(SCATTER_RADIUS);
+                    
+                    const r = Math.random();
+                    let colorHex = "#FCD34D";
+                    if (r < 0.12) colorHex = "#22c55e";
+                    else if (r < 0.24) colorHex = "#ef4444";
+
+                    const color = new THREE.Color(colorHex);
+
+                    data.push({
+                        treePos,
+                        scatterPos,
+                        rotation: new THREE.Euler(Math.random() * Math.PI, Math.random() * Math.PI, 0),
+                        scale: 0.2 + Math.random() * 0.25,
+                        color: color,
+                        speed: 0.5 + Math.random(),
+                    });
+                }
+                return data;
+            }, []);
+
+            const gifts = React.useMemo(() => {
+                const data = [];
+                for (let i = 0; i < GIFT_COUNT; i++) {
+                    const isHanging = Math.random() < 0.6;
+                    let hRatio, rOffset, yOffset, scale;
+
+                    if (isHanging) {
+                        hRatio = Math.random() * 0.8; 
+                        rOffset = 0.3 + Math.random() * 0.6; 
+                        yOffset = 0;
+                        scale = 0.25 + Math.random() * 0.25; 
+                    } else {
+                        hRatio = Math.random() * 0.2; 
+                        rOffset = 0.8 + Math.random() * 2.5; 
+                        yOffset = -0.5; 
+                        scale = 0.4 + Math.random() * 0.5; 
+                    }
+
+                    const treePos = getTreeConePos(hRatio, Math.random() * Math.PI * 2, TREE_RADIUS + rOffset, TREE_HEIGHT);
+                    treePos.y += yOffset;
+
+                    const scatterPos = getRandomSpherePos(SCATTER_RADIUS);
+
+                    const r = Math.random();
+                    let colorHex;
+                    
+                    if (r < 0.35) colorHex = "#be123c";
+                    else if (r < 0.60) colorHex = "#047857";
+                    else if (r < 0.85) colorHex = "#10b981";
+                    else colorHex = "#FCD34D";
+
+                    const color = new THREE.Color(colorHex);
+
+                    data.push({
+                        treePos,
+                        scatterPos,
+                        rotation: new THREE.Euler(Math.random() * Math.PI, Math.random() * Math.PI, 0),
+                        scale: scale,
+                        color: color,
+                        speed: 0.3 + Math.random() * 0.5,
+                    });
+                }
+                return data;
+            }, []);
+
+            React.useLayoutEffect(() => {
+                if (giftMeshRef.current) {
+                    gifts.forEach((data, i) => {
+                        giftMeshRef.current.setColorAt(i, data.color);
+                    });
+                    if (giftMeshRef.current.instanceColor) {
+                        giftMeshRef.current.instanceColor.needsUpdate = true;
+                    }
+                }
+            }, [gifts]);
+
+            React.useLayoutEffect(() => {
+                if (baubleMeshRef.current) {
+                    baubles.forEach((data, i) => {
+                        baubleMeshRef.current.setColorAt(i, data.color);
+                    });
+                    if (baubleMeshRef.current.instanceColor) {
+                        baubleMeshRef.current.instanceColor.needsUpdate = true;
+                    }
+                }
+            }, [baubles]);
+
+            const tempObject = new THREE.Object3D();
+            const tempVec3 = new THREE.Vector3();
+
+            useFrame((state) => {
+                const t = state.clock.getElapsedTime();
+                uniforms.uTime.value = t;
+
+                if (baubleMeshRef.current) {
+                    for (let i = 0; i < ORNAMENT_COUNT; i++) {
+                        const item = baubles[i];
+                        
+                        tempVec3.lerpVectors(item.scatterPos, item.treePos, progress);
+                        
+                        if (progress < 0.9) {
+                            tempVec3.y += Math.sin(t * item.speed + i) * 0.05 * (1 - progress);
+                            tempVec3.x += Math.cos(t * item.speed * 0.5) * 0.05 * (1 - progress);
+                        }
+
+                        tempObject.position.copy(tempVec3);
+                        tempObject.rotation.x = item.rotation.x + t * 0.1;
+                        tempObject.rotation.y = item.rotation.y + t * 0.2;
+                        tempObject.scale.setScalar(item.scale * (0.5 + 0.5 * progress));
+                        
+                        tempObject.updateMatrix();
+                        baubleMeshRef.current.setMatrixAt(i, tempObject.matrix);
+                    }
+                    baubleMeshRef.current.instanceMatrix.needsUpdate = true;
+                }
+
+                if (giftMeshRef.current) {
+                    for (let i = 0; i < GIFT_COUNT; i++) {
+                        const item = gifts[i];
+                        
+                        tempVec3.lerpVectors(item.scatterPos, item.treePos, progress);
+                        
+                        if (progress < 0.9) {
+                            tempObject.rotation.x = item.rotation.x + t * item.speed;
+                            tempObject.rotation.y = item.rotation.y + t * item.speed;
+                        } else {
+                            tempObject.rotation.x = THREE.MathUtils.lerp(tempObject.rotation.x, 0, 0.1);
+                            tempObject.rotation.z = THREE.MathUtils.lerp(tempObject.rotation.z, 0, 0.1);
+                        }
+
+                        tempObject.position.copy(tempVec3);
+                        tempObject.scale.setScalar(item.scale);
+                        tempObject.updateMatrix();
+                        giftMeshRef.current.setMatrixAt(i, tempObject.matrix);
+                    }
+                    giftMeshRef.current.instanceMatrix.needsUpdate = true;
+                }
+            });
+
+            return React.createElement('group', null,
+                React.createElement('instancedMesh', {
+                    ref: baubleMeshRef,
+                    args: [undefined, undefined, ORNAMENT_COUNT],
+                    material: baubleMaterial
+                },
+                    React.createElement('sphereGeometry', { args: [1, 32, 32] })
+                ),
+                React.createElement('instancedMesh', {
+                    ref: giftMeshRef,
+                    args: [undefined, undefined, GIFT_COUNT],
+                    material: giftMaterial
+                },
+                    React.createElement('boxGeometry', { args: [1, 1, 1] })
+                )
+            );
+        };
+
+        // Scene Content Component
+        const SceneContent = ({ treeState }) => {
+            const { camera } = useThree();
+            const starRef = React.useRef(null);
+            const [visualProgress, setVisualProgress] = React.useState(0);
+
+            const starShape = React.useMemo(() => {
+                const shape = new THREE.Shape();
+                const points = 5;
+                const outerRadius = 0.9;
+                const innerRadius = 0.45;
+                const angleOffset = Math.PI / 2;
+
+                for (let i = 0; i < points * 2; i++) {
+                    const angle = (i * Math.PI) / points + angleOffset;
+                    const r = i % 2 === 0 ? outerRadius : innerRadius;
+                    const x = Math.cos(angle) * r;
+                    const y = Math.sin(angle) * r;
+                    if (i === 0) shape.moveTo(x, y);
+                    else shape.lineTo(x, y);
+                }
+                shape.closePath();
+                return shape;
+            }, []);
+
+            useFrame((state, delta) => {
+                const target = treeState === TreeState.TREE_SHAPE ? 1 : 0;
+                const speed = 2.0; 
+                const diff = target - visualProgress;
+                
+                if (Math.abs(diff) > 0.001) {
+                    setVisualProgress(visualProgress + diff * speed * delta);
+                }
+                
+                const time = state.clock.getElapsedTime();
+                if(treeState === TreeState.SCATTERED) {
+                    camera.position.x += Math.sin(time * 0.1) * 0.02;
+                    camera.position.z += Math.cos(time * 0.1) * 0.02;
+                }
+
+                if (starRef.current) {
+                    starRef.current.rotation.y = time * 0.4;
+                }
+            });
+
+            return React.createElement('group', { position: [0, -4, 0] },
+                React.createElement(Foliage, { progress: visualProgress }),
+                React.createElement(Ornaments, { progress: visualProgress }),
+                
+                React.createElement('group', { 
+                    ref: starRef, 
+                    position: [0, 6.5, 0], 
+                    scale: visualProgress 
+                },
+                    React.createElement(Center, null,
+                        React.createElement('mesh', null,
+                            React.createElement('extrudeGeometry', { 
+                                args: [
+                                    starShape, 
+                                    { 
+                                        depth: 0.3, 
+                                        bevelEnabled: true, 
+                                        bevelThickness: 0.1, 
+                                        bevelSize: 0.05, 
+                                        bevelSegments: 3 
+                                    }
+                                ] 
+                            }),
+                            React.createElement('meshStandardMaterial', { 
+                                color: "#FFD700",
+                                emissive: "#FFD700",
+                                emissiveIntensity: 0.8,
+                                roughness: 0.1,
+                                metalness: 1
+                            })
+                        )
+                    )
+                ),
+                
+                React.createElement(ContactShadows, { 
+                    position: [0, -7, 0],
+                    opacity: 0.5 * visualProgress,
+                    scale: 40,
+                    blur: 2.5,
+                    far: 10,
+                    resolution: 512,
+                    color: "#000000"
+                })
+            );
+        };
+
+        // Experience Component
+        const Experience = ({ treeState }) => {
+            return React.createElement(Canvas, {
+                dpr: [1, 2],
+                camera: { position: [0, 0, 18], fov: 45 },
+                gl: { antialias: false, toneMapping: THREE.ReinhardToneMapping, toneMappingExposure: 1.5 }
+            },
+                React.createElement('color', { attach: 'background', args: ['#020617'] }),
+                
+                React.createElement('ambientLight', { intensity: 0.2, color: "#004225" }),
+                React.createElement('spotLight', { 
+                    position: [10, 20, 10],
+                    angle: 0.25,
+                    penumbra: 1,
+                    intensity: 200,
+                    color: "#FCD34D",
+                    castShadow: true
+                }),
+                React.createElement('pointLight', { position: [-10, -5, -10], intensity: 10, color: "#064e3b" }),
+                React.createElement('pointLight', { position: [0, 5, 5], intensity: 5, color: "#fff", distance: 10, decay: 2 }),
+
+                React.createElement(Environment, { preset: 'city' }),
+                React.createElement(SceneContent, { treeState }),
+
+                React.createElement(OrbitControls, { 
+                    enablePan: false,
+                    minDistance: 8,
+                    maxDistance: 25,
+                    autoRotate: treeState === TreeState.TREE_SHAPE,
+                    autoRotateSpeed: 0.5
+                }),
+
+                React.createElement(EffectComposer, { disableNormalPass: true },
+                    React.createElement(Bloom, { 
+                        luminanceThreshold: 0.5,
+                        mipmapBlur: true,
+                        intensity: 1.2,
+                        radius: 0.6
+                    }),
+                    React.createElement(Vignette, { eskil: false, offset: 0.1, darkness: 1.1 })
+                )
+            );
+        };
+
+        // Main App Component
+        const App = () => {
+            const [treeState, setTreeState] = React.useState(TreeState.TREE_SHAPE);
+
+            const toggleState = () => {
+                setTreeState((prev) => 
+                    prev === TreeState.TREE_SHAPE ? TreeState.SCATTERED : TreeState.TREE_SHAPE
+                );
+            };
+
+            const isScattered = treeState === TreeState.SCATTERED;
+
+            return React.createElement('div', { 
+                className: 'relative w-full h-screen bg-slate-950 font-sans' 
+            },
+                React.createElement('div', { className: 'absolute inset-0 z-0' },
+                    React.createElement(Experience, { treeState })
+                ),
+
+                React.createElement('main', { 
+                    className: 'absolute inset-0 z-10 pointer-events-none flex flex-col justify-between p-8 md:p-12' 
+                },
+                    React.createElement('header', { 
+                        className: 'flex flex-col items-start gap-2 animate-fade-in-down' 
+                    },
+                        React.createElement('h1', { 
+                            className: 'font-serif text-4xl md:text-6xl text-gold-gradient font-bold tracking-tight',
+                            style: { fontFamily: "'Playfair Display', serif" }
+                        }, 'Twinkle Tuan'),
+                        React.createElement('h2', { 
+                            className: 'text-emerald-100/80 text-sm md:text-lg tracking-[0.2em] uppercase font-light' 
+                        }, 'here is your Christmas Tree')
+                    ),
+
+                    React.createElement('div', { 
+                        className: 'self-center md:self-end flex flex-col items-center md:items-end gap-6 pointer-events-auto' 
+                    },
+                        React.createElement('button', {
+                            onClick: toggleState,
+                            className: `
+                                relative group overflow-hidden px-8 py-4 rounded-full 
+                                transition-all duration-700 ease-out
+                                border border-emerald-500/30 backdrop-blur-md
+                                ${isScattered ? 'bg-emerald-900/40' : 'bg-amber-900/20'}
+                            `
+                        },
+                            React.createElement('div', { 
+                                className: 'absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 bg-gradient-to-r from-transparent via-amber-400/10 to-transparent' 
+                            }),
+                            React.createElement('span', {
+                                className: `
+                                    relative z-10 font-serif italic text-xl md:text-2xl 
+                                    transition-all duration-500
+                                    ${isScattered ? 'text-emerald-300' : 'text-amber-200'}
+                                `,
+                                style: { fontFamily: "'Playfair Display', serif" }
+                            }, isScattered ? 'Tree?' : 'Try This')
+                        )
+                    ),
+
+                    React.createElement('footer', { 
+                        className: 'text-emerald-900/40 text-[10px] uppercase tracking-widest flex justify-between items-end' 
+                    },
+                        React.createElement('span', null, 'Interactive 3D Experience'),
+                        React.createElement('span', null, 'React • Three Fiber • WebGL')
+                    )
+                )
+            );
+        };
+
+        // Render the app
+        const rootElement = document.getElementById('root');
+        if (!rootElement) {
+            throw new Error("Could not find root element to mount to");
+        }
+
+        const root = createRoot(rootElement);
+        root.render(React.createElement(App));
+    </script>
+</body>
+</html>
